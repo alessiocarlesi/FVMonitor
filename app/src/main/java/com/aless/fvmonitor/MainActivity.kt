@@ -15,6 +15,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,7 +42,6 @@ import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import kotlin.math.abs
-import androidx.lifecycle.viewModelScope
 
 // ============================================================================
 // MODELLI DATI
@@ -55,6 +57,7 @@ data class GroupData(
 
 data class TelemetryData(
     val uptimeStr: String = "0d 0h 0m 0s",
+    val wifiRssi: Int = 0,
     val timestampMs: Long = 0,
     val state: String = "SCONOSCIUTO",
     val v24: Float = 0f,
@@ -222,6 +225,7 @@ class MainViewModel(context: Context) : ViewModel() {
 
             val telemetryParsed = TelemetryData(
                 uptimeStr = map["uptime"] ?: "0d 0h 0m 0s",
+                wifiRssi = map["rssi"]?.toIntOrNull() ?: 0,
                 timestampMs = map["ms"]?.toLongOrNull() ?: 0L,
                 state = map["stato"] ?: "SCONOSCIUTO",
                 v24 = map["V24"]?.toFloatOrDefault(0f) ?: 0f,
@@ -303,6 +307,33 @@ fun DashboardScreen(viewModel: MainViewModel) {
             TopAppBar(
                 title = { Text("FV Monitor", fontWeight = FontWeight.Bold) },
                 actions = {
+                    // Badge Wi-Fi RSSI
+                    if (isConnected && telemetry.wifiRssi != 0) {
+                        val rssiColor = when {
+                            telemetry.wifiRssi > -70 -> Color.Green
+                            telemetry.wifiRssi > -85 -> Color(0xFFFFC107) // Giallo
+                            else -> Color.Red
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(end = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Wifi,
+                                contentDescription = "Segnale Wi-Fi",
+                                tint = rssiColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = "${telemetry.wifiRssi} dBm",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = rssiColor
+                            )
+                        }
+                    }
+
                     Text(
                         text = if (isConnected) "ONLINE" else "OFFLINE",
                         color = if (isConnected) Color.Green else Color.Red,
@@ -390,7 +421,6 @@ fun StateHeaderCard(t: TelemetryData) {
     val isInsufficientSolar = t.pPv < 20f || quotaSolare < 0.15f
 
     val formattedState = when {
-        // Se la centralina segnala Solare + Batterie ma il contributo solare è < 15% o < 20W
         isMixedState && isInsufficientSolar -> "SOLO BATTERIE"
         isMixedState -> "SOLARE + BATTERIE"
         raw.contains("SOLO_FV") -> "SOLO SOLARE"
@@ -415,7 +445,21 @@ fun StateHeaderCard(t: TelemetryData) {
         colors = CardDefaults.cardColors(containerColor = stateColor)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("STATO OPERATIVO", fontSize = 12.sp, color = Color.White.copy(alpha = 0.8f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("STATO OPERATIVO", fontSize = 12.sp, color = Color.White.copy(alpha = 0.8f))
+                if (t.wifiRssi != 0) {
+                    Text(
+                        text = "Wi-Fi: ${t.wifiRssi} dBm",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White.copy(alpha = 0.9f)
+                    )
+                }
+            }
             Text(formattedState, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
