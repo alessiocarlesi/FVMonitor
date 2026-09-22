@@ -16,7 +16,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,6 +32,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import kotlin.math.abs
 
 // ============================================================================
@@ -72,7 +73,7 @@ data class TelemetryData(
 )
 
 // ============================================================================
-// VIEWMODEL CON SALVATAGGIO IP/PORTA
+// VIEWMODEL CON RICEZIONE ROBUSSTA
 // ============================================================================
 class MainViewModel(context: Context) : ViewModel() {
 
@@ -114,10 +115,17 @@ class MainViewModel(context: Context) : ViewModel() {
             val currentPort = _port.value
 
             while (isActive) {
+                var socket: Socket? = null
                 try {
                     addLog("Connessione a $currentHost:$currentPort...")
-                    val socket = Socket()
+                    socket = Socket()
+
+                    // Timeout sulla connessione iniziale (5s)
                     socket.connect(InetSocketAddress(currentHost, currentPort), 5000)
+
+                    // Timeout sulla lettura (10s): se non arrivano dati per 10 secondi, solleva SocketTimeoutException
+                    socket.soTimeout = 10000
+
                     _isConnected.value = true
                     addLog("CONNESSO!")
 
@@ -126,50 +134,67 @@ class MainViewModel(context: Context) : ViewModel() {
                     val stringBuilder = StringBuilder()
 
                     while (isActive) {
-                        val bytesRead = inputStream.read(buffer)
-                        if (bytesRead == -1) break
+                        try {
+                            val bytesRead = inputStream.read(buffer)
+                            if (bytesRead == -1) {
+                                addLog("Fine streaming rilevata dal server.")
+                                break
+                            }
 
-                        val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
-                        Log.d("FV_TCP", "RAW RECV: $chunk")
-                        stringBuilder.append(chunk)
+                            val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
+                            Log.d("FV_TCP", "RAW RECV: $chunk")
+                            stringBuilder.append(chunk)
 
-                        var newlineIndex = stringBuilder.indexOf("\n")
-                        while (newlineIndex != -1) {
-                            val line = stringBuilder.substring(0, newlineIndex).trim()
-                            stringBuilder.delete(0, newlineIndex + 1)
-                            if (line.isNotEmpty()) processRawChunk(line)
-                            newlineIndex = stringBuilder.indexOf("\n")
-                        }
+                            // Processa tutte le righe complete terminate da '\n' o '\r'
+                            var newlineIndex = stringBuilder.indexOf("\n")
+                            while (newlineIndex != -1) {
+                                val line = stringBuilder.substring(0, newlineIndex).trim()
+                                stringBuilder.delete(0, newlineIndex + 1)
 
-                        var telIndex = stringBuilder.indexOf("TEL;", 4)
-                        while (telIndex != -1) {
-                            val line = stringBuilder.substring(0, telIndex).trim()
-                            stringBuilder.delete(0, telIndex)
-                            if (line.isNotEmpty()) processRawChunk(line)
-                            telIndex = stringBuilder.indexOf("TEL;", 4)
-                        }
+                                if (line.isNotEmpty()) {
+                                    processRawChunk(line)
+                                }
+                                newlineIndex = stringBuilder.indexOf("\n")
+                            }
 
-                        if (stringBuilder.length > 2048) {
-                            stringBuilder.clear()
+                            // Protezione da buffer privi di newlines prolungati
+                            if (stringBuilder.length > 4096) {
+                                stringBuilder.clear()
+                                addLog("WARN: Buffer saturato senza newline. Svuotato.")
+                            }
+
+                        } catch (e: SocketTimeoutException) {
+                            // Timeout in lettura: nessun dato ricevuto negli ultimi 10 secondi
+                            addLog("Timeout ricezione dati (10s), riconnessione...")
+                            break
                         }
                     }
                 } catch (e: Exception) {
                     _isConnected.value = false
-                    addLog("Errore/Disconnesso: ${e.message}")
+                    addLog("Errore/Disconnesso: ${e.message ?: "Connessione persa"}")
                 } finally {
                     _isConnected.value = false
+                    try {
+                        socket?.close()
+                    } catch (_: Exception) {}
                 }
-                kotlinx.coroutines.delay(3000)
+
+                // Attesa prima del tentativo di riconnessione
+                delay(3000)
             }
         }
     }
 
     private fun processRawChunk(line: String) {
-        if (line.contains("TEL;")) {
-            val cleanStr = line.substring(line.indexOf("TEL;"))
-            parseTelemetry(cleanStr)
-        } else if (line.contains("EVENTO;")) {
-            addLog("EVENTO: ${line.substring(line.indexOf("EVENTO;"))}")
+        try {
+            if (line.contains("TEL;")) {
+                val cleanStr = line.substring(line.indexOf("TEL;"))
+                parseTelemetry(cleanStr)
+            } else if (line.contains("EVENTO;")) {
+                addLog("EVENTO: ${line.substring(line.indexOf("EVENTO;"))}")
+            }
+        } catch (e: Exception) {
+            addLog("Err Proc Chunk: ${e.message}")
         }
     }
 
@@ -307,11 +332,10 @@ fun DashboardScreen(viewModel: MainViewModel) {
             TopAppBar(
                 title = { Text("FV Monitor", fontWeight = FontWeight.Bold) },
                 actions = {
-                    // Badge Wi-Fi RSSI
                     if (isConnected && telemetry.wifiRssi != 0) {
                         val rssiColor = when {
                             telemetry.wifiRssi > -70 -> Color.Green
-                            telemetry.wifiRssi > -85 -> Color(0xFFFFC107) // Giallo
+                            telemetry.wifiRssi > -85 -> Color(0xFFFFC107)
                             else -> Color.Red
                         }
                         Row(
@@ -387,9 +411,9 @@ fun DashboardScreen(viewModel: MainViewModel) {
                         Text(
                             text = log,
                             color = when {
-                                log.contains("PARSE OK") -> Color.Green
+                                log.contains("PARSE OK") || log.contains("CONNESSO") -> Color.Green
                                 log.contains("EVENTO") -> Color.Yellow
-                                log.contains("WARN") || log.contains("Err") -> Color.Red
+                                log.contains("WARN") || log.contains("Err") || log.contains("Timeout") -> Color.Red
                                 else -> Color.White
                             },
                             fontFamily = FontFamily.Monospace,
@@ -410,11 +434,8 @@ fun DashboardScreen(viewModel: MainViewModel) {
 fun StateHeaderCard(t: TelemetryData) {
     val raw = t.state.trim().uppercase()
 
-    // Calcolo potenza erogata dalle batterie in scarica (P = V * I)
     val pBattScarica = if (t.iBattTotal > 0.2f) t.v24 * t.iBattTotal else 0f
     val pTotaleFornita = t.pPv + pBattScarica
-
-    // Quota percentuale fornita dal solare
     val quotaSolare = if (pTotaleFornita > 10f) (t.pPv / pTotaleFornita) else 0f
 
     val isMixedState = raw.contains("FV") && raw.contains("CARICO") && (raw.contains("BAT") || raw.contains("BATT"))
@@ -432,11 +453,11 @@ fun StateHeaderCard(t: TelemetryData) {
     }
 
     val stateColor = when {
-        isMixedState && isInsufficientSolar -> Color(0xFF7B1FA2) // Viola (Solo Batterie)
-        isMixedState -> Color(0xFF0288D1) // Blu (Solare + Batterie)
-        raw.contains("SOLO_FV") -> Color(0xFF4CAF50) // Verde
-        raw.contains("CARICA_BATTERIE") || raw.contains("CARICA_BATERIE") -> Color(0xFFFF9800) // Arancione
-        raw.contains("CARICO") && (raw.contains("BAT") || raw.contains("BATT")) -> Color(0xFF7B1FA2) // Viola
+        isMixedState && isInsufficientSolar -> Color(0xFF7B1FA2)
+        isMixedState -> Color(0xFF0288D1)
+        raw.contains("SOLO_FV") -> Color(0xFF4CAF50)
+        raw.contains("CARICA_BATTERIE") || raw.contains("CARICA_BATERIE") -> Color(0xFFFF9800)
+        raw.contains("CARICO") && (raw.contains("BAT") || raw.contains("BATT")) -> Color(0xFF7B1FA2)
         else -> Color(0xFF424242)
     }
 
