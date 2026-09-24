@@ -4,36 +4,32 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
-import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
-import android.util.Log
 import androidx.core.app.NotificationCompat
-import java.io.InputStream
+import kotlinx.coroutines.*
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import kotlin.concurrent.thread
 
 class TcpService : Service() {
 
     private val binder = LocalBinder()
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     private var socket: Socket? = null
-    private var outputStream: OutputStream? = null
-    private var wifiLock: WifiManager.WifiLock? = null
-    @Volatile private var isRunning = false
+    private var writer: OutputStream? = null
 
     var onLineReceived: ((String) -> Unit)? = null
     var onConnectionStateChanged: ((Boolean, String) -> Unit)? = null
 
-    companion object {
-        private const val TAG = "TcpService"
-        private const val CHANNEL_ID = "TcpServiceChannel"
-        private const val NOTIFICATION_ID = 1001
-    }
+    private var currentHost = ""
+    private var currentPort = 0
+    private var isConnecting = false
 
     inner class LocalBinder : Binder() {
         fun getService(): TcpService = this@TcpService
@@ -43,143 +39,108 @@ class TcpService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = createNotification("Servizio FV Monitor in ascolto...")
-        startForeground(NOTIFICATION_ID, notification)
-        acquireWifiLock()
-        return START_STICKY
-    }
-
-    private fun acquireWifiLock() {
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        @Suppress("DEPRECATION")
-        wifiLock = wifiManager.createWifiLock(
-            WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-            "FVMonitor::WifiLock"
-        ).apply {
-            setReferenceCounted(false)
-            acquire()
-        }
-        Log.d(TAG, "WifiLock acquisito.")
+        startForegroundNotification()
     }
 
     fun startConnection(host: String, port: Int) {
-        stopConnection()
-        isRunning = true
+        currentHost = host
+        currentPort = port
 
-        thread(start = true, isDaemon = true) {
-            while (isRunning) {
-                try {
-                    onConnectionStateChanged?.invoke(false, "Connessione a $host:$port...")
-                    socket = Socket()
-                    socket?.tcpNoDelay = true // Invia/riceve immediatamente senza buffering Nagle
-                    socket?.connect(InetSocketAddress(host, port), 5000)
-                    socket?.soTimeout = 12000
+        serviceScope.launch {
+            closeSocket()
+            isConnecting = true
+            withContext(Dispatchers.Main) {
+                onConnectionStateChanged?.invoke(false, "Connessione in corso a $host:$port...")
+            }
 
-                    outputStream = socket?.getOutputStream()
-                    val inputStream: InputStream = socket!!.getInputStream()
+            try {
+                val newSocket = Socket()
+                // Timeout di connessione 5 secondi per non bloccare l'app
+                newSocket.connect(InetSocketAddress(host, port), 5000)
+                socket = newSocket
+                writer = newSocket.getOutputStream()
 
-                    onConnectionStateChanged?.invoke(true, "CONNESSO ALL'ARDUINO MEGA!")
-                    updateNotification("Connesso a $host:$port")
+                withContext(Dispatchers.Main) {
+                    onConnectionStateChanged?.invoke(true, "CONNESSO a $host:$port")
+                }
 
-                    val buffer = ByteArray(2048)
-                    val stringBuilder = StringBuilder()
+                val reader = BufferedReader(InputStreamReader(newSocket.getInputStream()))
+                var line: String?
 
-                    while (isRunning && socket?.isClosed == false) {
-                        val bytesRead = inputStream.read(buffer)
-                        if (bytesRead == -1) break
-
-                        val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
-                        stringBuilder.append(chunk)
-
-                        var newlineIndex = stringBuilder.indexOf("\n")
-                        while (newlineIndex != -1) {
-                            val line = stringBuilder.substring(0, newlineIndex).trim()
-                            stringBuilder.delete(0, newlineIndex + 1)
-
-                            if (line.isNotEmpty()) {
-                                onLineReceived?.invoke(line)
-                            }
-                            newlineIndex = stringBuilder.indexOf("\n")
+                while (isActive && newSocket.isConnected && !newSocket.isClosed) {
+                    line = reader.readLine()
+                    if (line != null) {
+                        val received = line
+                        withContext(Dispatchers.Main) {
+                            onLineReceived?.invoke(received)
                         }
+                    } else {
+                        break // Connessione chiusa dal server
+                    }
+                }
 
-                        if (stringBuilder.length > 4096) {
-                            stringBuilder.clear()
-                        }
-                    }
-                } catch (e: Exception) {
-                    onConnectionStateChanged?.invoke(false, "Errore/Disconnesso: ${e.message}")
-                } finally {
-                    closeSocket()
-                    if (isRunning) {
-                        Thread.sleep(3000)
-                    }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onConnectionStateChanged?.invoke(false, "Errore connessione: ${e.localizedMessage}")
+                }
+            } finally {
+                closeSocket()
+                isConnecting = false
+                withContext(Dispatchers.Main) {
+                    onConnectionStateChanged?.invoke(false, "DISCONNESSO")
                 }
             }
         }
     }
 
     fun sendCommand(cmd: String) {
-        thread(start = true) {
+        serviceScope.launch {
             try {
-                if (socket?.isConnected == true && outputStream != null) {
-                    val formatted = if (cmd.endsWith("\n")) cmd else "$cmd\r\n"
-                    outputStream?.write(formatted.toByteArray(Charsets.UTF_8))
-                    outputStream?.flush()
+                writer?.let {
+                    it.write((cmd + "\n").toByteArray())
+                    it.flush()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Errore invio comando: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    onConnectionStateChanged?.invoke(false, "Err Invio: ${e.message}")
+                }
             }
         }
     }
 
-    fun stopConnection() {
-        isRunning = false
-        closeSocket()
-    }
-
     private fun closeSocket() {
         try {
-            outputStream?.close()
             socket?.close()
         } catch (_: Exception) {}
-        onConnectionStateChanged?.invoke(false, "Disconnesso")
+        socket = null
+        writer = null
     }
 
-    override fun onDestroy() {
-        stopConnection()
-        if (wifiLock?.isHeld == true) {
-            wifiLock?.release()
-        }
-        super.onDestroy()
-    }
-
-    private fun createNotificationChannel() {
+    private fun startForegroundNotification() {
+        val channelId = "fv_monitor_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
+                channelId,
                 "FV Monitor Service",
                 NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            manager?.createNotificationChannel(channel)
         }
-    }
 
-    private fun createNotification(text: String): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("BiciTrack FV Monitor")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setOngoing(true)
+        val notification: Notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("FV Monitor Active")
+            .setContentText("Monitoraggio TCP in esecuzione")
+            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+
+        startForeground(1001, notification)
     }
 
-    private fun updateNotification(text: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, createNotification(text))
+    override fun onDestroy() {
+        closeSocket()
+        serviceScope.cancel()
+        super.onDestroy()
     }
 }

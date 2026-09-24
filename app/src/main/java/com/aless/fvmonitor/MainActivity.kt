@@ -81,7 +81,7 @@ data class TelemetryData(
 }
 
 // ============================================================================
-// VIEWMODEL RISTRUTTURATO PER SERVIZIO
+// VIEWMODEL
 // ============================================================================
 class MainViewModel(context: Context) : ViewModel() {
 
@@ -93,8 +93,17 @@ class MainViewModel(context: Context) : ViewModel() {
     private val _port = MutableStateFlow(prefs.getInt("ip_port", 8888))
     val port: StateFlow<Int> = _port.asStateFlow()
 
-    private val _vCalibOffset = MutableStateFlow(prefs.getFloat("v_calib_offset", 0.0f))
-    val vCalibOffset: StateFlow<Float> = _vCalibOffset.asStateFlow()
+    private val _calV24 = MutableStateFlow(prefs.getFloat("cal_v24", 1.0f))
+    val calV24: StateFlow<Float> = _calV24.asStateFlow()
+
+    private val _calG1 = MutableStateFlow(prefs.getFloat("cal_g1", 1.0f))
+    val calG1: StateFlow<Float> = _calG1.asStateFlow()
+
+    private val _calG2 = MutableStateFlow(prefs.getFloat("cal_g2", 1.0f))
+    val calG2: StateFlow<Float> = _calG2.asStateFlow()
+
+    private val _calG3 = MutableStateFlow(prefs.getFloat("cal_g3", 1.0f))
+    val calG3: StateFlow<Float> = _calG3.asStateFlow()
 
     private val _telemetry = MutableStateFlow(TelemetryData())
     val telemetry: StateFlow<TelemetryData> = _telemetry.asStateFlow()
@@ -119,17 +128,24 @@ class MainViewModel(context: Context) : ViewModel() {
         connect()
     }
 
-    fun updateSettings(newHost: String, newPort: Int, calibOffset: Float) {
+    fun updateSettings(newHost: String, newPort: Int, cV24: Float, cG1: Float, cG2: Float, cG3: Float) {
         prefs.edit()
             .putString("ip_host", newHost)
             .putInt("ip_port", newPort)
-            .putFloat("v_calib_offset", calibOffset)
+            .putFloat("cal_v24", cV24)
+            .putFloat("cal_g1", cG1)
+            .putFloat("cal_g2", cG2)
+            .putFloat("cal_g3", cG3)
             .apply()
 
         _host.value = newHost
         _port.value = newPort
-        _vCalibOffset.value = calibOffset
-        addLog("Configurazioni salvate: Host=$newHost, Offset=${calibOffset}V")
+        _calV24.value = cV24
+        _calG1.value = cG1
+        _calG2.value = cG2
+        _calG3.value = cG3
+
+        addLog("Impostazioni salvate: V24=$cV24, G1=$cG1, G2=$cG2, G3=$cG3")
         connect()
     }
 
@@ -177,17 +193,15 @@ class MainViewModel(context: Context) : ViewModel() {
                 }
             }
 
-            val offset = _vCalibOffset.value
-
-            fun parseV(key: String): Float {
+            fun parseV(key: String, factor: Float): Float {
                 val valRaw = map[key]?.toFloatOrNull() ?: 0f
-                return if (valRaw > 0.5f) valRaw + offset else 0f
+                return if (valRaw > 0.5f) valRaw * factor else 0f
             }
 
             val g1 = GroupData(
                 id = 1,
-                vLow = parseV("G1_Vb"),
-                vHighMeas = parseV("G1_Va"),
+                vLow = parseV("G1_Vb", _calG1.value),
+                vHighMeas = parseV("G1_Va", 1.0f),
                 prot = map["G1_pr"] ?: map["G1_prot"] ?: "OK",
                 trig = map["G1_tr"] ?: map["G1_trig"] ?: "-",
                 mos = map["G1_m"] ?: map["G1_mos"] ?: "ON"
@@ -195,8 +209,8 @@ class MainViewModel(context: Context) : ViewModel() {
 
             val g2 = GroupData(
                 id = 2,
-                vLow = parseV("G2_Vb"),
-                vHighMeas = parseV("G2_Va"),
+                vLow = parseV("G2_Vb", _calG2.value),
+                vHighMeas = parseV("G2_Va", 1.0f),
                 prot = map["G2_pr"] ?: map["G2_prot"] ?: "OK",
                 trig = map["G2_tr"] ?: map["G2_trig"] ?: "-",
                 mos = map["G2_m"] ?: map["G2_mos"] ?: "ON"
@@ -204,8 +218,8 @@ class MainViewModel(context: Context) : ViewModel() {
 
             val g3 = GroupData(
                 id = 3,
-                vLow = parseV("G3_Vb"),
-                vHighMeas = parseV("G3_Va"),
+                vLow = parseV("G3_Vb", _calG3.value),
+                vHighMeas = parseV("G3_Va", 1.0f),
                 prot = map["G3_pr"] ?: map["G3_prot"] ?: "OK",
                 trig = map["G3_tr"] ?: map["G3_trig"] ?: "-",
                 mos = map["G3_m"] ?: map["G3_mos"] ?: "ON"
@@ -216,7 +230,7 @@ class MainViewModel(context: Context) : ViewModel() {
                 wifiRssi = map["rssi"]?.toIntOrNull() ?: 0,
                 timestampMs = map["ms"]?.toLongOrNull() ?: 0L,
                 state = map["stato"] ?: "SCONOSCIUTO",
-                v24Raw = parseV("V24"),
+                v24Raw = parseV("V24", _calV24.value),
                 iBattTotal = map["IbatTot"]?.toFloatOrNull() ?: 0f,
                 iPv = map["IPv"]?.toFloatOrNull() ?: 0f,
                 pPv = map["PFV"]?.toFloatOrNull() ?: 0f,
@@ -246,19 +260,23 @@ class MainViewModelFactory(private val context: Context) : ViewModelProvider.Fac
 }
 
 // ============================================================================
-// MAIN ACTIVITY
+// MAIN ACTIVITY (CON GESTIONE ONRESUME E BINDING SICURO)
 // ============================================================================
 class MainActivity : ComponentActivity() {
 
     private var viewModel: MainViewModel? = null
+    private var isBound = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as TcpService.LocalBinder
             viewModel?.bindTcpService(binder.getService())
+            isBound = true
         }
 
-        override fun onServiceDisconnected(name: ComponentName?) {}
+        override fun onServiceDisconnected(name: ComponentName?) {
+            isBound = false
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -289,18 +307,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Se l'app viene riaperta manualmente dall'icona, tenta subito la riconnessione
+        if (isBound) {
+            viewModel?.connect()
+        }
+    }
+
     override fun onDestroy() {
-        try {
-            unbindService(serviceConnection)
-        } catch (_: Exception) {}
+        if (isBound) {
+            try {
+                unbindService(serviceConnection)
+            } catch (_: Exception) {}
+            isBound = false
+        }
         super.onDestroy()
     }
 }
 
 // ============================================================================
-// COMPOSABLE UI (I tuoi componenti intatti)
+// COMPOSABLE UI
 // ============================================================================
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(viewModel: MainViewModel) {
@@ -309,7 +337,11 @@ fun DashboardScreen(viewModel: MainViewModel) {
     val logs by viewModel.logs.collectAsState()
     val currentHost by viewModel.host.collectAsState()
     val currentPort by viewModel.port.collectAsState()
-    val calibOffset by viewModel.vCalibOffset.collectAsState()
+
+    val calV24 by viewModel.calV24.collectAsState()
+    val calG1 by viewModel.calG1.collectAsState()
+    val calG2 by viewModel.calG2.collectAsState()
+    val calG3 by viewModel.calG3.collectAsState()
 
     var showSettingsDialog by remember { mutableStateOf(false) }
 
@@ -317,10 +349,13 @@ fun DashboardScreen(viewModel: MainViewModel) {
         SettingsDialog(
             initialHost = currentHost,
             initialPort = currentPort,
-            initialOffset = calibOffset,
+            initialV24 = calV24,
+            initialG1 = calG1,
+            initialG2 = calG2,
+            initialG3 = calG3,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newHost, newPort, newOffset ->
-                viewModel.updateSettings(newHost, newPort, newOffset)
+            onSave = { newHost, newPort, cV24, cG1, cG2, cG3 ->
+                viewModel.updateSettings(newHost, newPort, cV24, cG1, cG2, cG3)
                 showSettingsDialog = false
             }
         )
@@ -535,19 +570,28 @@ fun BatteryTotalCard(iBattTotal: Float, eKWh: Float) {
 fun SettingsDialog(
     initialHost: String,
     initialPort: Int,
-    initialOffset: Float,
+    initialV24: Float,
+    initialG1: Float,
+    initialG2: Float,
+    initialG3: Float,
     onDismiss: () -> Unit,
-    onSave: (String, Int, Float) -> Unit
+    onSave: (String, Int, Float, Float, Float, Float) -> Unit
 ) {
     var hostText by remember { mutableStateOf(initialHost) }
     var portText by remember { mutableStateOf(initialPort.toString()) }
-    var offsetText by remember { mutableStateOf(initialOffset.toString()) }
+    var v24Text by remember { mutableStateOf(initialV24.toString()) }
+    var g1Text by remember { mutableStateOf(initialG1.toString()) }
+    var g2Text by remember { mutableStateOf(initialG2.toString()) }
+    var g3Text by remember { mutableStateOf(initialG3.toString()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Configurazione & Taratura") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedTextField(
                     value = hostText,
                     onValueChange = { hostText = it },
@@ -560,10 +604,30 @@ fun SettingsDialog(
                     label = { Text("Porta TCP") },
                     singleLine = true
                 )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Text("Coefficienti Moltiplicativi Taratura:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 OutlinedTextField(
-                    value = offsetText,
-                    onValueChange = { offsetText = it },
-                    label = { Text("Offset Taratura Tensione (V)") },
+                    value = v24Text,
+                    onValueChange = { v24Text = it },
+                    label = { Text("Coeff. Bus V24") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = g1Text,
+                    onValueChange = { g1Text = it },
+                    label = { Text("Coeff. G1 VLow") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = g2Text,
+                    onValueChange = { g2Text = it },
+                    label = { Text("Coeff. G2 VLow") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = g3Text,
+                    onValueChange = { g3Text = it },
+                    label = { Text("Coeff. G3 VLow") },
                     singleLine = true
                 )
             }
@@ -572,8 +636,11 @@ fun SettingsDialog(
             Button(
                 onClick = {
                     val port = portText.toIntOrNull() ?: 8888
-                    val offset = offsetText.toFloatOrNull() ?: 0.0f
-                    onSave(hostText.trim(), port, offset)
+                    val cV24 = v24Text.toFloatOrNull() ?: 1.0f
+                    val cG1 = g1Text.toFloatOrNull() ?: 1.0f
+                    val cG2 = g2Text.toFloatOrNull() ?: 1.0f
+                    val cG3 = g3Text.toFloatOrNull() ?: 1.0f
+                    onSave(hostText.trim(), port, cV24, cG1, cG2, cG3)
                 }
             ) {
                 Text("Salva e Connetti")
