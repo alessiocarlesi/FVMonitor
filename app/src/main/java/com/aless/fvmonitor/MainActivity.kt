@@ -1,8 +1,12 @@
 package com.aless.fvmonitor
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Build
 import android.os.Bundle
-import android.util.Log
+import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -28,20 +32,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import java.io.InputStream
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.net.SocketTimeoutException
 import kotlin.math.abs
 
 // ============================================================================
@@ -50,18 +44,21 @@ import kotlin.math.abs
 data class GroupData(
     val id: Int,
     val vLow: Float = 0f,
-    val vHigh: Float = 0f,
+    val vHighMeas: Float = 0f,
     val prot: String = "OK",
     val trig: String = "-",
     val mos: String = "OFF"
-)
+) {
+    val vHighReal: Float get() = (vHighMeas - vLow).coerceAtLeast(0f)
+    val vTotalGroup: Float get() = vHighMeas
+}
 
 data class TelemetryData(
     val uptimeStr: String = "0d 0h 0m 0s",
     val wifiRssi: Int = 0,
     val timestampMs: Long = 0,
     val state: String = "SCONOSCIUTO",
-    val v24: Float = 0f,
+    val v24Raw: Float = 0f,
     val iBattTotal: Float = 0f,
     val iPv: Float = 0f,
     val pPv: Float = 0f,
@@ -70,20 +67,34 @@ data class TelemetryData(
     val eKWh: Float = 0f,
     val releSpring: String = "OFF",
     val groups: List<GroupData> = listOf(GroupData(1), GroupData(2), GroupData(3))
-)
+) {
+    val v24Effective: Float
+        get() {
+            if (v24Raw > 5f) return v24Raw
+            val activeGroups = groups.filter { it.vTotalGroup > 10f }
+            return if (activeGroups.isNotEmpty()) {
+                activeGroups.map { it.vTotalGroup }.average().toFloat()
+            } else {
+                0f
+            }
+        }
+}
 
 // ============================================================================
-// VIEWMODEL CON RICEZIONE ROBUSSTA
+// VIEWMODEL RISTRUTTURATO PER SERVIZIO
 // ============================================================================
 class MainViewModel(context: Context) : ViewModel() {
 
     private val prefs = context.getSharedPreferences("fv_monitor_prefs", Context.MODE_PRIVATE)
 
-    private val _host = MutableStateFlow(prefs.getString("ip_host", "192.168.1.100") ?: "192.168.1.100")
+    private val _host = MutableStateFlow(prefs.getString("ip_host", "192.168.10.222") ?: "192.168.10.222")
     val host: StateFlow<String> = _host.asStateFlow()
 
     private val _port = MutableStateFlow(prefs.getInt("ip_port", 8888))
     val port: StateFlow<Int> = _port.asStateFlow()
+
+    private val _vCalibOffset = MutableStateFlow(prefs.getFloat("v_calib_offset", 0.0f))
+    val vCalibOffset: StateFlow<Float> = _vCalibOffset.asStateFlow()
 
     private val _telemetry = MutableStateFlow(TelemetryData())
     val telemetry: StateFlow<TelemetryData> = _telemetry.asStateFlow()
@@ -94,95 +105,40 @@ class MainViewModel(context: Context) : ViewModel() {
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    private var connectionJob: Job? = null
+    private var tcpService: TcpService? = null
 
-    init {
+    fun bindTcpService(service: TcpService) {
+        tcpService = service
+        tcpService?.onLineReceived = { line ->
+            processRawChunk(line)
+        }
+        tcpService?.onConnectionStateChanged = { connected, msg ->
+            _isConnected.value = connected
+            addLog(msg)
+        }
         connect()
     }
 
-    fun updateConnectionSettings(newHost: String, newPort: Int) {
-        prefs.edit().putString("ip_host", newHost).putInt("ip_port", newPort).apply()
+    fun updateSettings(newHost: String, newPort: Int, calibOffset: Float) {
+        prefs.edit()
+            .putString("ip_host", newHost)
+            .putInt("ip_port", newPort)
+            .putFloat("v_calib_offset", calibOffset)
+            .apply()
+
         _host.value = newHost
         _port.value = newPort
-        addLog("Nuova configurazione salvata: $newHost:$newPort")
+        _vCalibOffset.value = calibOffset
+        addLog("Configurazioni salvate: Host=$newHost, Offset=${calibOffset}V")
         connect()
     }
 
     fun connect() {
-        connectionJob?.cancel()
-        connectionJob = viewModelScope.launch(Dispatchers.IO) {
-            val currentHost = _host.value
-            val currentPort = _port.value
+        tcpService?.startConnection(_host.value, _port.value)
+    }
 
-            while (isActive) {
-                var socket: Socket? = null
-                try {
-                    addLog("Connessione a $currentHost:$currentPort...")
-                    socket = Socket()
-
-                    // Timeout sulla connessione iniziale (5s)
-                    socket.connect(InetSocketAddress(currentHost, currentPort), 5000)
-
-                    // Timeout sulla lettura (10s): se non arrivano dati per 10 secondi, solleva SocketTimeoutException
-                    socket.soTimeout = 10000
-
-                    _isConnected.value = true
-                    addLog("CONNESSO!")
-
-                    val inputStream: InputStream = socket.getInputStream()
-                    val buffer = ByteArray(2048)
-                    val stringBuilder = StringBuilder()
-
-                    while (isActive) {
-                        try {
-                            val bytesRead = inputStream.read(buffer)
-                            if (bytesRead == -1) {
-                                addLog("Fine streaming rilevata dal server.")
-                                break
-                            }
-
-                            val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
-                            Log.d("FV_TCP", "RAW RECV: $chunk")
-                            stringBuilder.append(chunk)
-
-                            // Processa tutte le righe complete terminate da '\n' o '\r'
-                            var newlineIndex = stringBuilder.indexOf("\n")
-                            while (newlineIndex != -1) {
-                                val line = stringBuilder.substring(0, newlineIndex).trim()
-                                stringBuilder.delete(0, newlineIndex + 1)
-
-                                if (line.isNotEmpty()) {
-                                    processRawChunk(line)
-                                }
-                                newlineIndex = stringBuilder.indexOf("\n")
-                            }
-
-                            // Protezione da buffer privi di newlines prolungati
-                            if (stringBuilder.length > 4096) {
-                                stringBuilder.clear()
-                                addLog("WARN: Buffer saturato senza newline. Svuotato.")
-                            }
-
-                        } catch (e: SocketTimeoutException) {
-                            // Timeout in lettura: nessun dato ricevuto negli ultimi 10 secondi
-                            addLog("Timeout ricezione dati (10s), riconnessione...")
-                            break
-                        }
-                    }
-                } catch (e: Exception) {
-                    _isConnected.value = false
-                    addLog("Errore/Disconnesso: ${e.message ?: "Connessione persa"}")
-                } finally {
-                    _isConnected.value = false
-                    try {
-                        socket?.close()
-                    } catch (_: Exception) {}
-                }
-
-                // Attesa prima del tentativo di riconnessione
-                delay(3000)
-            }
-        }
+    fun sendCommand(cmd: String) {
+        tcpService?.sendCommand(cmd)
     }
 
     private fun processRawChunk(line: String) {
@@ -221,10 +177,17 @@ class MainViewModel(context: Context) : ViewModel() {
                 }
             }
 
+            val offset = _vCalibOffset.value
+
+            fun parseV(key: String): Float {
+                val valRaw = map[key]?.toFloatOrNull() ?: 0f
+                return if (valRaw > 0.5f) valRaw + offset else 0f
+            }
+
             val g1 = GroupData(
                 id = 1,
-                vLow = map["G1_Vb"]?.toFloatOrDefault(0f) ?: 0f,
-                vHigh = map["G1_Va"]?.toFloatOrDefault(0f) ?: 0f,
+                vLow = parseV("G1_Vb"),
+                vHighMeas = parseV("G1_Va"),
                 prot = map["G1_pr"] ?: map["G1_prot"] ?: "OK",
                 trig = map["G1_tr"] ?: map["G1_trig"] ?: "-",
                 mos = map["G1_m"] ?: map["G1_mos"] ?: "ON"
@@ -232,8 +195,8 @@ class MainViewModel(context: Context) : ViewModel() {
 
             val g2 = GroupData(
                 id = 2,
-                vLow = map["G2_Vb"]?.toFloatOrDefault(0f) ?: 0f,
-                vHigh = map["G2_Va"]?.toFloatOrDefault(0f) ?: 0f,
+                vLow = parseV("G2_Vb"),
+                vHighMeas = parseV("G2_Va"),
                 prot = map["G2_pr"] ?: map["G2_prot"] ?: "OK",
                 trig = map["G2_tr"] ?: map["G2_trig"] ?: "-",
                 mos = map["G2_m"] ?: map["G2_mos"] ?: "ON"
@@ -241,30 +204,28 @@ class MainViewModel(context: Context) : ViewModel() {
 
             val g3 = GroupData(
                 id = 3,
-                vLow = map["G3_Vb"]?.toFloatOrDefault(0f) ?: 0f,
-                vHigh = map["G3_Va"]?.toFloatOrDefault(0f) ?: 0f,
+                vLow = parseV("G3_Vb"),
+                vHighMeas = parseV("G3_Va"),
                 prot = map["G3_pr"] ?: map["G3_prot"] ?: "OK",
                 trig = map["G3_tr"] ?: map["G3_trig"] ?: "-",
-                mos = map["G3_m"] ?: map["G3_mos"] ?: if (map.containsKey("G3_Vb")) "ON" else "OFF"
+                mos = map["G3_m"] ?: map["G3_mos"] ?: "ON"
             )
 
-            val telemetryParsed = TelemetryData(
+            _telemetry.value = TelemetryData(
                 uptimeStr = map["uptime"] ?: "0d 0h 0m 0s",
                 wifiRssi = map["rssi"]?.toIntOrNull() ?: 0,
                 timestampMs = map["ms"]?.toLongOrNull() ?: 0L,
                 state = map["stato"] ?: "SCONOSCIUTO",
-                v24 = map["V24"]?.toFloatOrDefault(0f) ?: 0f,
-                iBattTotal = map["IbatTot"]?.toFloatOrDefault(0f) ?: 0f,
-                iPv = map["IPv"]?.toFloatOrDefault(0f) ?: 0f,
-                pPv = map["PFV"]?.toFloatOrDefault(0f) ?: 0f,
-                pAc = map["PAC_stim"]?.toFloatOrDefault(0f) ?: 0f,
-                pAcMem = map["PAC_mem"]?.toFloatOrDefault(0f) ?: 0f,
-                eKWh = map["EkWh"]?.toFloatOrDefault(0f) ?: 0f,
+                v24Raw = parseV("V24"),
+                iBattTotal = map["IbatTot"]?.toFloatOrNull() ?: 0f,
+                iPv = map["IPv"]?.toFloatOrNull() ?: 0f,
+                pPv = map["PFV"]?.toFloatOrNull() ?: 0f,
+                pAc = map["PAC_stim"]?.toFloatOrNull() ?: 0f,
+                pAcMem = map["PAC_mem"]?.toFloatOrNull() ?: 0f,
+                eKWh = map["EkWh"]?.toFloatOrNull() ?: 0f,
                 releSpring = map["rele_spring"] ?: "OFF",
                 groups = listOf(g1, g2, g3)
             )
-
-            _telemetry.value = telemetryParsed
 
         } catch (e: Exception) {
             addLog("Err Parsing: ${e.message}")
@@ -275,34 +236,70 @@ class MainViewModel(context: Context) : ViewModel() {
         val timeSec = (System.currentTimeMillis() % 100000) / 1000
         _logs.value = (listOf("${timeSec}s: $msg") + _logs.value).take(50)
     }
-
-    private fun String.toFloatOrDefault(default: Float): Float = this.toFloatOrNull() ?: default
 }
 
 class MainViewModelFactory(private val context: Context) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        @Suppress("UNCHECKED_CAST")
         return MainViewModel(context) as T
     }
 }
 
 // ============================================================================
-// INTERFACCIA GRAFICA
+// MAIN ACTIVITY
 // ============================================================================
 class MainActivity : ComponentActivity() {
+
+    private var viewModel: MainViewModel? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as TcpService.LocalBinder
+            viewModel?.bindTcpService(binder.getService())
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {}
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+        }
+
+        val serviceIntent = Intent(this, TcpService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+
         setContent {
             val context = LocalContext.current
-            val viewModel: MainViewModel = viewModel(factory = MainViewModelFactory(context))
+            val vm: MainViewModel = viewModel(factory = MainViewModelFactory(context))
+            viewModel = vm
 
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    DashboardScreen(viewModel)
+                    DashboardScreen(vm)
                 }
             }
         }
     }
+
+    override fun onDestroy() {
+        try {
+            unbindService(serviceConnection)
+        } catch (_: Exception) {}
+        super.onDestroy()
+    }
 }
+
+// ============================================================================
+// COMPOSABLE UI (I tuoi componenti intatti)
+// ============================================================================
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -312,6 +309,7 @@ fun DashboardScreen(viewModel: MainViewModel) {
     val logs by viewModel.logs.collectAsState()
     val currentHost by viewModel.host.collectAsState()
     val currentPort by viewModel.port.collectAsState()
+    val calibOffset by viewModel.vCalibOffset.collectAsState()
 
     var showSettingsDialog by remember { mutableStateOf(false) }
 
@@ -319,9 +317,10 @@ fun DashboardScreen(viewModel: MainViewModel) {
         SettingsDialog(
             initialHost = currentHost,
             initialPort = currentPort,
+            initialOffset = calibOffset,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newHost, newPort ->
-                viewModel.updateConnectionSettings(newHost, newPort)
+            onSave = { newHost, newPort, newOffset ->
+                viewModel.updateSettings(newHost, newPort, newOffset)
                 showSettingsDialog = false
             }
         )
@@ -365,7 +364,7 @@ fun DashboardScreen(viewModel: MainViewModel) {
                         modifier = Modifier.padding(end = 4.dp)
                     )
                     IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Impostazioni IP")
+                        Icon(Icons.Default.Settings, contentDescription = "Impostazioni")
                     }
                     IconButton(onClick = { viewModel.connect() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Riconnetti")
@@ -385,14 +384,14 @@ fun DashboardScreen(viewModel: MainViewModel) {
             StateHeaderCard(telemetry)
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricCard("Bus 24V", "%.2f V".format(telemetry.v24), Modifier.weight(1f), Color(0xFF2196F3))
+                MetricCard("Bus 24V", "%.2f V".format(telemetry.v24Effective), Modifier.weight(1f), Color(0xFF2196F3))
                 MetricCard("Solare FV", "%.1f W".format(telemetry.pPv), Modifier.weight(1f), Color(0xFFFFC107), "%.1f A".format(telemetry.iPv))
                 MetricCard("Carico AC", "%.1f W".format(telemetry.pAc), Modifier.weight(1f), Color(0xFFFF5722), "Mem: %.0fW".format(telemetry.pAcMem))
             }
 
             BatteryTotalCard(iBattTotal = telemetry.iBattTotal, eKWh = telemetry.eKWh)
 
-            Text("Gruppi Batterie (12V + 12V)", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text("Gruppi Batterie (Dettaglio Bassa/Alta)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 telemetry.groups.forEach { group ->
                     GroupCard(group, modifier = Modifier.weight(1f))
@@ -426,15 +425,11 @@ fun DashboardScreen(viewModel: MainViewModel) {
     }
 }
 
-// ============================================================================
-// COMPONENTI DI FORMATTAZIONE E SCHERMATA
-// ============================================================================
-
 @Composable
 fun StateHeaderCard(t: TelemetryData) {
     val raw = t.state.trim().uppercase()
 
-    val pBattScarica = if (t.iBattTotal > 0.2f) t.v24 * t.iBattTotal else 0f
+    val pBattScarica = if (t.iBattTotal > 0.2f) t.v24Effective * t.iBattTotal else 0f
     val pTotaleFornita = t.pPv + pBattScarica
     val quotaSolare = if (pTotaleFornita > 10f) (t.pPv / pTotaleFornita) else 0f
 
@@ -540,15 +535,17 @@ fun BatteryTotalCard(iBattTotal: Float, eKWh: Float) {
 fun SettingsDialog(
     initialHost: String,
     initialPort: Int,
+    initialOffset: Float,
     onDismiss: () -> Unit,
-    onSave: (String, Int) -> Unit
+    onSave: (String, Int, Float) -> Unit
 ) {
     var hostText by remember { mutableStateOf(initialHost) }
     var portText by remember { mutableStateOf(initialPort.toString()) }
+    var offsetText by remember { mutableStateOf(initialOffset.toString()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Configurazione Rete") },
+        title = { Text("Configurazione & Taratura") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -563,13 +560,20 @@ fun SettingsDialog(
                     label = { Text("Porta TCP") },
                     singleLine = true
                 )
+                OutlinedTextField(
+                    value = offsetText,
+                    onValueChange = { offsetText = it },
+                    label = { Text("Offset Taratura Tensione (V)") },
+                    singleLine = true
+                )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
                     val port = portText.toIntOrNull() ?: 8888
-                    onSave(hostText.trim(), port)
+                    val offset = offsetText.toFloatOrNull() ?: 0.0f
+                    onSave(hostText.trim(), port, offset)
                 }
             ) {
                 Text("Salva e Connetti")
@@ -626,9 +630,9 @@ fun GroupCard(g: GroupData, modifier: Modifier = Modifier) {
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))
-            Text("Bassa: %.2fV".format(g.vLow), fontSize = 12.sp)
-            Text("Alta:  %.2fV".format(g.vHigh), fontSize = 12.sp)
-            Text("Tot:   %.2fV".format(g.vLow + g.vHigh), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("Inf:  %.2fV".format(g.vLow), fontSize = 12.sp)
+            Text("Sup:  %.2fV".format(g.vHighReal), fontSize = 12.sp)
+            Text("Tot:  %.2fV".format(g.vTotalGroup), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF64B5F6))
 
             if (isFault) {
                 Spacer(modifier = Modifier.height(4.dp))
