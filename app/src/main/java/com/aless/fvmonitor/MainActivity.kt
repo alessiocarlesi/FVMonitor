@@ -43,13 +43,13 @@ import kotlin.math.abs
 data class GroupData(
     val id: Int,
     val vLow: Float = 0f,
-    val vHighMeas: Float = 0f,
+    val bus24: Float = 0f,
     val prot: String = "OK",
     val trig: String = "-",
     val mos: String = "OFF"
 ) {
-    val vHighReal: Float get() = (vHighMeas - vLow).coerceAtLeast(0f)
-    val vTotalGroup: Float get() = vHighMeas
+    // La batteria superiore è la Tensione Bus 24V meno la batteria Inferiore
+    val vHighReal: Float get() = (bus24 - vLow).coerceAtLeast(0f)
 }
 
 data class TelemetryData(
@@ -70,12 +70,7 @@ data class TelemetryData(
     val v24Effective: Float
         get() {
             if (v24Raw > 5f) return v24Raw
-            val activeGroups = groups.filter { it.vTotalGroup > 10f }
-            return if (activeGroups.isNotEmpty()) {
-                activeGroups.map { it.vTotalGroup }.average().toFloat()
-            } else {
-                0f
-            }
+            return 0f
         }
 }
 
@@ -203,10 +198,12 @@ class MainViewModel(context: Context) : ViewModel() {
                 return if (valRaw > 0.5f) valRaw * factor else 0f
             }
 
+            val v24Val = parseV("V24", _calV24.value)
+
             val g1 = GroupData(
                 id = 1,
                 vLow = parseV("G1_Vb", _calG1.value),
-                vHighMeas = parseV("G1_Va", 1.0f),
+                bus24 = v24Val,
                 prot = map["G1_pr"] ?: map["G1_prot"] ?: "OK",
                 trig = map["G1_tr"] ?: map["G1_trig"] ?: "-",
                 mos = map["G1_m"] ?: map["G1_mos"] ?: "ON"
@@ -215,7 +212,7 @@ class MainViewModel(context: Context) : ViewModel() {
             val g2 = GroupData(
                 id = 2,
                 vLow = parseV("G2_Vb", _calG2.value),
-                vHighMeas = parseV("G2_Va", 1.0f),
+                bus24 = v24Val,
                 prot = map["G2_pr"] ?: map["G2_prot"] ?: "OK",
                 trig = map["G2_tr"] ?: map["G2_trig"] ?: "-",
                 mos = map["G2_m"] ?: map["G2_mos"] ?: "ON"
@@ -224,7 +221,7 @@ class MainViewModel(context: Context) : ViewModel() {
             val g3 = GroupData(
                 id = 3,
                 vLow = parseV("G3_Vb", _calG3.value),
-                vHighMeas = parseV("G3_Va", 1.0f),
+                bus24 = v24Val,
                 prot = map["G3_pr"] ?: map["G3_prot"] ?: "OK",
                 trig = map["G3_tr"] ?: map["G3_trig"] ?: "-",
                 mos = map["G3_m"] ?: map["G3_mos"] ?: "ON"
@@ -235,7 +232,7 @@ class MainViewModel(context: Context) : ViewModel() {
                 wifiRssi = map["rssi"]?.toIntOrNull() ?: 0,
                 timestampMs = map["ms"]?.toLongOrNull() ?: 0L,
                 state = map["stato"] ?: "SCONOSCIUTO",
-                v24Raw = parseV("V24", _calV24.value),
+                v24Raw = v24Val,
                 iBattTotal = map["IbatTot"]?.toFloatOrNull() ?: 0f,
                 iPv = map["IPv"]?.toFloatOrNull() ?: 0f,
                 pPv = map["PFV"]?.toFloatOrNull() ?: 0f,
@@ -691,8 +688,7 @@ fun GroupCard(g: GroupData, modifier: Modifier = Modifier) {
             }
             Spacer(modifier = Modifier.height(4.dp))
             Text("Inf:  %.2fV".format(g.vLow), fontSize = 12.sp)
-            Text("Sup:  %.2fV".format(g.vHighReal), fontSize = 12.sp)
-            Text("Tot:  %.2fV".format(g.vTotalGroup), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF64B5F6))
+            Text("Sup:  %.2fV".format(g.vHighReal), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF64B5F6))
 
             if (isFault) {
                 Spacer(modifier = Modifier.height(4.dp))
