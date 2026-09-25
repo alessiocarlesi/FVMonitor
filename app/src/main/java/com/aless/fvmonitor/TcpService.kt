@@ -41,12 +41,7 @@ class TcpService : Service() {
     }
 
     fun startConnection(host: String, port: Int) {
-        // Se c'è già una socket aperta e connessa, evitiamo di riaprirla
-        if (socket?.isConnected == true && socket?.isClosed == false) {
-            return
-        }
-
-        // Annulla eventuali tentativi precedenti pendenti
+        // Annulla sempre eventuali tentativi precedenti e chiude il vecchio socket
         connectionJob?.cancel()
 
         connectionJob = serviceScope.launch {

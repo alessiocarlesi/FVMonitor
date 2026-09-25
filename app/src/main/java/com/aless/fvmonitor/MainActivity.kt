@@ -166,6 +166,7 @@ class MainViewModel(context: Context) : ViewModel() {
             if (line.contains("TEL;")) {
                 val cleanStr = line.substring(line.indexOf("TEL;"))
                 parseTelemetry(cleanStr)
+                _isConnected.value = true
             } else if (line.contains("EVENTO;")) {
                 addLog("EVENTO: ${line.substring(line.indexOf("EVENTO;"))}")
             }
