@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -20,16 +21,13 @@ class TcpService : Service() {
 
     private val binder = LocalBinder()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var connectionJob: Job? = null
 
     private var socket: Socket? = null
     private var writer: OutputStream? = null
 
     var onLineReceived: ((String) -> Unit)? = null
     var onConnectionStateChanged: ((Boolean, String) -> Unit)? = null
-
-    private var currentHost = ""
-    private var currentPort = 0
-    private var isConnecting = false
 
     inner class LocalBinder : Binder() {
         fun getService(): TcpService = this@TcpService
@@ -43,51 +41,55 @@ class TcpService : Service() {
     }
 
     fun startConnection(host: String, port: Int) {
-        currentHost = host
-        currentPort = port
+        // Se c'è già una socket aperta e connessa, evitiamo di riaprirla
+        if (socket?.isConnected == true && socket?.isClosed == false) {
+            return
+        }
 
-        serviceScope.launch {
+        // Annulla eventuali tentativi precedenti pendenti
+        connectionJob?.cancel()
+
+        connectionJob = serviceScope.launch {
             closeSocket()
-            isConnecting = true
+
             withContext(Dispatchers.Main) {
                 onConnectionStateChanged?.invoke(false, "Connessione in corso a $host:$port...")
             }
 
             try {
                 val newSocket = Socket()
-                // Timeout di connessione 5 secondi per non bloccare l'app
                 newSocket.connect(InetSocketAddress(host, port), 5000)
-                socket = newSocket
-                writer = newSocket.getOutputStream()
+
+                synchronized(this@TcpService) {
+                    socket = newSocket
+                    writer = newSocket.getOutputStream()
+                }
 
                 withContext(Dispatchers.Main) {
                     onConnectionStateChanged?.invoke(true, "CONNESSO a $host:$port")
                 }
 
                 val reader = BufferedReader(InputStreamReader(newSocket.getInputStream()))
-                var line: String?
 
                 while (isActive && newSocket.isConnected && !newSocket.isClosed) {
-                    line = reader.readLine()
-                    if (line != null) {
-                        val received = line
-                        withContext(Dispatchers.Main) {
-                            onLineReceived?.invoke(received)
-                        }
-                    } else {
-                        break // Connessione chiusa dal server
+                    val line = reader.readLine() ?: break
+                    withContext(Dispatchers.Main) {
+                        onLineReceived?.invoke(line)
                     }
                 }
 
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    onConnectionStateChanged?.invoke(false, "Errore connessione: ${e.localizedMessage}")
+                if (isActive) {
+                    withContext(Dispatchers.Main) {
+                        onConnectionStateChanged?.invoke(false, "Errore connessione: ${e.localizedMessage}")
+                    }
                 }
             } finally {
                 closeSocket()
-                isConnecting = false
-                withContext(Dispatchers.Main) {
-                    onConnectionStateChanged?.invoke(false, "DISCONNESSO")
+                if (isActive) {
+                    withContext(Dispatchers.Main) {
+                        onConnectionStateChanged?.invoke(false, "DISCONNESSO")
+                    }
                 }
             }
         }
@@ -135,7 +137,15 @@ class TcpService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-        startForeground(1001, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                1001,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            startForeground(1001, notification)
+        }
     }
 
     override fun onDestroy() {

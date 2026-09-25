@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,14 +26,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -125,6 +124,7 @@ class MainViewModel(context: Context) : ViewModel() {
             _isConnected.value = connected
             addLog(msg)
         }
+        addLog("Service collegato. Avvio connessione...")
         connect()
     }
 
@@ -150,7 +150,11 @@ class MainViewModel(context: Context) : ViewModel() {
     }
 
     fun connect() {
-        tcpService?.startConnection(_host.value, _port.value)
+        if (tcpService != null) {
+            tcpService?.startConnection(_host.value, _port.value)
+        } else {
+            addLog("Attesa binding del servizio...")
+        }
     }
 
     fun sendCommand(cmd: String) {
@@ -246,7 +250,7 @@ class MainViewModel(context: Context) : ViewModel() {
         }
     }
 
-    private fun addLog(msg: String) {
+    fun addLog(msg: String) {
         val timeSec = (System.currentTimeMillis() % 100000) / 1000
         _logs.value = (listOf("${timeSec}s: $msg") + _logs.value).take(50)
     }
@@ -260,18 +264,18 @@ class MainViewModelFactory(private val context: Context) : ViewModelProvider.Fac
 }
 
 // ============================================================================
-// MAIN ACTIVITY (CON GESTIONE ONRESUME E BINDING SICURO)
+// MAIN ACTIVITY
 // ============================================================================
 class MainActivity : ComponentActivity() {
 
-    private var viewModel: MainViewModel? = null
+    private val viewModel: MainViewModel by viewModels { MainViewModelFactory(applicationContext) }
     private var isBound = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as TcpService.LocalBinder
-            viewModel?.bindTcpService(binder.getService())
             isBound = true
+            viewModel.bindTcpService(binder.getService())
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -295,23 +299,11 @@ class MainActivity : ComponentActivity() {
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
 
         setContent {
-            val context = LocalContext.current
-            val vm: MainViewModel = viewModel(factory = MainViewModelFactory(context))
-            viewModel = vm
-
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    DashboardScreen(vm)
+                    DashboardScreen(viewModel)
                 }
             }
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // Se l'app viene riaperta manualmente dall'icona, tenta subito la riconnessione
-        if (isBound) {
-            viewModel?.connect()
         }
     }
 
