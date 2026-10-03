@@ -125,7 +125,12 @@ fun DashboardScreen(viewModel: MainViewModel) {
                 MetricCard("Carico AC", "%.1f W".format(telemetry.pAc), Modifier.weight(1f), Color(0xFFFF5722), "Mem: %.0fW".format(telemetry.pAcMem))
             }
 
-            BatteryTotalCard(iBattTotal = telemetry.iBattTotal, eKWh = telemetry.eKWh)
+            BatteryTotalCard(
+                iBattTotal = telemetry.iBattTotal,
+                eKWh = telemetry.eKWh,
+                socPercent = telemetry.socPercent,
+                ocvVoltage = telemetry.estimatedOcv
+            )
 
             Text("Controllo Carico e Comandi", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             CommandControlCard(
@@ -501,7 +506,7 @@ fun StateHeaderCard(t: TelemetryData) {
 }
 
 @Composable
-fun BatteryTotalCard(iBattTotal: Float, eKWh: Float) {
+fun BatteryTotalCard(iBattTotal: Float, eKWh: Float, socPercent: Int, ocvVoltage: Float) {
     val absCurrent = abs(iBattTotal)
     val (statusLabel, statusColor) = remember(iBattTotal) {
         when {
@@ -513,7 +518,33 @@ fun BatteryTotalCard(iBattTotal: Float, eKWh: Float) {
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
-            Text("Batterie Totale", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Batterie Totale (LiFePO4)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(
+                    text = "$socPercent%",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = when {
+                        socPercent > 20 -> Color(0xFF4CAF50)
+                        socPercent > 10 -> Color(0xFFFFC107)
+                        else -> Color(0xFFF44336)
+                    }
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            LinearProgressIndicator(
+                progress = { socPercent / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .padding(vertical = 4.dp),
+                color = Color(0xFF4CAF50),
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
             Spacer(modifier = Modifier.height(6.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -523,21 +554,21 @@ fun BatteryTotalCard(iBattTotal: Float, eKWh: Float) {
                 Column {
                     Text(
                         text = "%.2f A".format(absCurrent),
-                        fontSize = 20.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = statusLabel,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         color = statusColor,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text("Accumulo", fontSize = 12.sp, color = Color.Gray)
+                    Text("OCV Stimata: %.2fV".format(ocvVoltage), fontSize = 11.sp, color = Color.Gray)
                     Text(
                         text = "%.4f kWh".format(eKWh),
-                        fontSize = 18.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF4CAF50)
                     )

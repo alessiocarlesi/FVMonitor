@@ -32,4 +32,33 @@ data class TelemetryData(
             if (v24Raw > 5f) return v24Raw
             return 0f
         }
+
+    // Tensione a vuoto stimata (OCV) compensando la caduta/salita di tensione dovuta alla corrente (I * R)
+    // Resistenza interna indicativa del banco 24V (8S): ~0.045 Ohm
+    val estimatedOcv: Float
+        get() {
+            if (v24Effective <= 0f) return 0f
+            val internalResistance = 0.045f // Ohm
+            return v24Effective + (iBattTotal * internalResistance)
+        }
+
+    // Stato di Carica (SoC) percentuale basato sulla curva caratteristica delle celle LiFePO4 8S
+    val socPercent: Int
+        get() {
+            val ocv = estimatedOcv
+            if (ocv <= 0f) return 0
+
+            return when {
+                ocv >= 28.4f -> 100
+                ocv >= 27.2f -> 95
+                ocv >= 26.8f -> 90
+                ocv >= 26.5f -> 80
+                ocv >= 26.3f -> 60
+                ocv >= 26.1f -> 40
+                ocv >= 25.8f -> 20
+                ocv >= 25.0f -> 10
+                ocv >= 23.5f -> 5
+                else -> 0
+            }
+        }
 }
