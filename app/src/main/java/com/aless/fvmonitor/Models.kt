@@ -33,31 +33,41 @@ data class TelemetryData(
             return 0f
         }
 
-    // Tensione a vuoto stimata (OCV) compensando la caduta/salita di tensione dovuta alla corrente (I * R)
-    // Resistenza interna indicativa del banco 24V (8S): ~0.045 Ohm
+    // Tensione a vuoto stimata (OCV) corretta per il banco LiFePO4
     val estimatedOcv: Float
         get() {
             if (v24Effective <= 0f) return 0f
-            val internalResistance = 0.045f // Ohm
-            return v24Effective + (iBattTotal * internalResistance)
+
+            return if (iBattTotal > 0.2f) {
+                // Durante la carica, l'OCV stimata si allinea in modo pulito alla tensione del bus (o leggermente sotto)
+                if (v24Effective >= 28.0f) 28.0f else v24Effective - 0.4f
+            } else if (iBattTotal < -0.2f) {
+                // Durante la scarica aggiungiamo la caduta resistiva
+                v24Effective + (kotlin.math.abs(iBattTotal) * 0.045f)
+            } else {
+                v24Effective
+            }
         }
 
-    // Stato di Carica (SoC) percentuale basato sulla curva caratteristica delle celle LiFePO4 8S
+    // Stato di Carica (SoC) percentuale basato sul comportamento delle celle LiFePO4 8S (Cut-off a 29.2V)
     val socPercent: Int
         get() {
+            // Se la tensione ha raggiunto o superato i 29.2V (fine carica), è al 100% fisso
+            if (v24Effective >= 29.2f) return 100
+
             val ocv = estimatedOcv
             if (ocv <= 0f) return 0
 
             return when {
                 ocv >= 28.4f -> 100
-                ocv >= 27.2f -> 95
-                ocv >= 26.8f -> 90
-                ocv >= 26.5f -> 80
+                ocv >= 27.6f -> 95
+                ocv >= 27.0f -> 90
+                ocv >= 26.6f -> 80
                 ocv >= 26.3f -> 60
-                ocv >= 26.1f -> 40
-                ocv >= 25.8f -> 20
-                ocv >= 25.0f -> 10
-                ocv >= 23.5f -> 5
+                ocv >= 26.0f -> 40
+                ocv >= 25.5f -> 20
+                ocv >= 24.5f -> 10
+                ocv >= 23.0f -> 5
                 else -> 0
             }
         }

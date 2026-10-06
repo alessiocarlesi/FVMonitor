@@ -171,7 +171,8 @@ class MainViewModel(context: Context) : ViewModel() {
                 state = map["stato"] ?: "SCONOSCIUTO",
                 lastEvent = map["last_evt"] ?: "OK",
                 v24Raw = v24Val,
-                iBattTotal = map["IbatTot"]?.toFloatOrNull() ?: 0f,
+                // Invertiamo il segno della corrente solo per l'interfaccia app (Carica/Scarica)
+                iBattTotal = -(map["IbatTot"]?.toFloatOrNull() ?: 0f),
                 iPv = map["IPv"]?.toFloatOrNull() ?: 0f,
                 pPv = map["PFV"]?.toFloatOrNull() ?: 0f,
                 pAc = map["PAC_stim"]?.toFloatOrNull() ?: 0f,
