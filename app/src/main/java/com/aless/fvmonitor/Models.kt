@@ -33,27 +33,34 @@ data class TelemetryData(
             return 0f
         }
 
-    // Tensione a vuoto stimata (OCV) corretta per il banco LiFePO4
+    // Tensione a vuoto stimata (OCV) corretta dinamicamente per il banco LiFePO4
     val estimatedOcv: Float
         get() {
             if (v24Effective <= 0f) return 0f
 
+            // Se la tensione sul bus si avvicina o tocca la soglia di fine carica (29.2V),
+            // l'OCV si fissa sul valore massimo di targa delle celle.
+            if (v24Effective >= 29.0f) return 28.8f
+
             return if (iBattTotal > 0.2f) {
-                // Durante la carica, l'OCV stimata si allinea in modo pulito alla tensione del bus (o leggermente sotto)
-                if (v24Effective >= 28.0f) 28.0f else v24Effective - 0.4f
+                // SOTTO CARICA: sottraiamo una sovratensione proporzionale alla corrente effettiva (Ampere)
+                val sovratensione = iBattTotal * 0.035f
+                val ocvCalc = v24Effective - sovratensione
+                if (ocvCalc >= 28.6f) 28.6f else ocvCalc
             } else if (iBattTotal < -0.2f) {
-                // Durante la scarica aggiungiamo la caduta resistiva
+                // SOTTO SCARICA: aggiungiamo la caduta resistiva proporzionale alla corrente
                 v24Effective + (kotlin.math.abs(iBattTotal) * 0.045f)
             } else {
+                // A RIPOSO: la tensione di bus coincide con l'OCV
                 v24Effective
             }
         }
 
-    // Stato di Carica (SoC) percentuale basato sul comportamento delle celle LiFePO4 8S (Cut-off a 29.2V)
+    // Stato di Carica (SoC) percentuale basato sul comportamento delle celle LiFePO4 8S
     val socPercent: Int
         get() {
-            // Se la tensione ha raggiunto o superato i 29.2V (fine carica), è al 100% fisso
-            if (v24Effective >= 29.2f) return 100
+            // Se la tensione ha raggiunto o superato i 29.0V (fine carica), è al 100% fisso
+            if (v24Effective >= 29.0f) return 100
 
             val ocv = estimatedOcv
             if (ocv <= 0f) return 0
@@ -63,11 +70,11 @@ data class TelemetryData(
                 ocv >= 27.6f -> 95
                 ocv >= 27.0f -> 90
                 ocv >= 26.6f -> 80
-                ocv >= 26.3f -> 60
-                ocv >= 26.0f -> 40
-                ocv >= 25.5f -> 20
-                ocv >= 24.5f -> 10
-                ocv >= 23.0f -> 5
+                ocv >= 26.3f -> 70
+                ocv >= 26.0f -> 50
+                ocv >= 25.5f -> 30
+                ocv >= 24.8f -> 15
+                ocv >= 23.5f -> 5
                 else -> 0
             }
         }
