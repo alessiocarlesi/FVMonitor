@@ -393,7 +393,7 @@ fun SimulationControlCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (simulationMode) Color(0xFFFFF3CD) else MaterialTheme.colorScheme.surfaceVariant
+            containerColor = if (simulationMode) Color(0xFFE8F5E9) else Color(0xFFF1F3F4)
         )
     ) {
         Column(
@@ -403,17 +403,24 @@ fun SimulationControlCard(
             Text(
                 if (simulationMode) "SIMULAZIONE ATTIVA" else "Simulazione firmware",
                 fontWeight = FontWeight.Bold,
-                color = if (simulationMode) Color(0xFF8A4B00) else MaterialTheme.colorScheme.onSurface
+                color = if (simulationMode) Color(0xFF1B5E20) else Color(0xFF202124)
             )
             Text(
                 "I batterie: positiva in carica, negativa in scarica. In simulazione i relè restano OFF; uscendo riprende il controllo normale.",
-                fontSize = 12.sp
+                fontSize = 12.sp,
+                color = Color(0xFF30343B)
             )
             OutlinedTextField(
                 value = v24,
                 onValueChange = { v24 = it },
                 label = { Text("V24 (V)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color(0xFF161616), unfocusedTextColor = Color(0xFF161616),
+                    focusedLabelColor = Color(0xFF1565C0), unfocusedLabelColor = Color(0xFF424242),
+                    focusedBorderColor = Color(0xFF1565C0), unfocusedBorderColor = Color(0xFF616161),
+                    focusedContainerColor = Color.White, unfocusedContainerColor = Color.White
+                ),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -421,22 +428,46 @@ fun SimulationControlCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                OutlinedTextField(
-                    value = iBatt,
-                    onValueChange = { iBatt = it },
-                    label = { Text("I batterie (A)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = iPv,
-                    onValueChange = { iPv = it },
-                    label = { Text("I FV (A)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    OutlinedTextField(
+                        value = iBatt,
+                        onValueChange = { iBatt = it },
+                        label = { Text("I batterie (A)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF161616), unfocusedTextColor = Color(0xFF161616),
+                            focusedLabelColor = Color(0xFF1565C0), unfocusedLabelColor = Color(0xFF424242),
+                            focusedBorderColor = Color(0xFF1565C0), unfocusedBorderColor = Color(0xFF616161),
+                            focusedContainerColor = Color.White, unfocusedContainerColor = Color.White
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(onClick = {
+                        val value = normalized(iBatt)?.toFloatOrNull()
+                        if (value != null && value != 0f) iBatt = (-value).toString()
+                    }) { Text("± inverti segno", color = Color(0xFF0D47A1)) }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    OutlinedTextField(
+                        value = iPv,
+                        onValueChange = { iPv = it },
+                        label = { Text("I FV (A)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF161616), unfocusedTextColor = Color(0xFF161616),
+                            focusedLabelColor = Color(0xFF1565C0), unfocusedLabelColor = Color(0xFF424242),
+                            focusedBorderColor = Color(0xFF1565C0), unfocusedBorderColor = Color(0xFF616161),
+                            focusedContainerColor = Color.White, unfocusedContainerColor = Color.White
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(onClick = {
+                        val value = normalized(iPv)?.toFloatOrNull()
+                        if (value != null && value != 0f) iPv = (-value).toString()
+                    }) { Text("± inverti segno", color = Color(0xFF0D47A1)) }
+                }
             }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
