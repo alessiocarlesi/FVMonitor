@@ -132,6 +132,18 @@ fun DashboardScreen(viewModel: MainViewModel) {
                 ocvVoltage = telemetry.estimatedOcv
             )
 
+            SimulationControlCard(
+                simulationMode = telemetry.simulationMode,
+                isConnected = isConnected,
+                onStart = { v24, iBatt, iPv ->
+                    viewModel.sendCommand("SIM:ON;V24=$v24;IBAT=$iBatt;IPV=$iPv")
+                },
+                onApply = { v24, iBatt, iPv ->
+                    viewModel.sendCommand("SIM:SET;V24=$v24;IBAT=$iBatt;IPV=$iPv")
+                },
+                onStop = { viewModel.sendCommand("SIM:OFF") }
+            )
+
             Text("Controllo Carico e Comandi", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             CommandControlCard(
                 releSpringState = telemetry.releSpring,
@@ -352,6 +364,111 @@ fun LastEventBanner(
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text("CANCELLA", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SimulationControlCard(
+    simulationMode: Boolean,
+    isConnected: Boolean,
+    onStart: (String, String, String) -> Unit,
+    onApply: (String, String, String) -> Unit,
+    onStop: () -> Unit
+) {
+    var v24 by remember { mutableStateOf("26.0") }
+    var iBatt by remember { mutableStateOf("0.0") }
+    var iPv by remember { mutableStateOf("0.0") }
+
+    fun normalized(value: String): String? {
+        val cleaned = value.trim().replace(',', '.')
+        return if (cleaned.toFloatOrNull() != null) cleaned else null
+    }
+
+    val values = listOf(normalized(v24), normalized(iBatt), normalized(iPv))
+    val valid = values.all { it != null }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (simulationMode) Color(0xFFFFF3CD) else MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                if (simulationMode) "SIMULAZIONE ATTIVA" else "Simulazione firmware",
+                fontWeight = FontWeight.Bold,
+                color = if (simulationMode) Color(0xFF8A4B00) else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                "I batterie: positiva in carica, negativa in scarica. In simulazione i relè restano OFF; uscendo riprende il controllo normale.",
+                fontSize = 12.sp
+            )
+            OutlinedTextField(
+                value = v24,
+                onValueChange = { v24 = it },
+                label = { Text("V24 (V)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedTextField(
+                    value = iBatt,
+                    onValueChange = { iBatt = it },
+                    label = { Text("I batterie (A)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = iPv,
+                    onValueChange = { iPv = it },
+                    label = { Text("I FV (A)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (!simulationMode) {
+                    Button(
+                        onClick = {
+                            onStart(values[0]!!, values[1]!!, values[2]!!)
+                        },
+                        enabled = isConnected && valid,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Avvia simulazione")
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            onApply(values[0]!!, values[1]!!, values[2]!!)
+                        },
+                        enabled = isConnected && valid,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Aggiorna valori")
+                    }
+                    OutlinedButton(
+                        onClick = onStop,
+                        enabled = isConnected,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Esci")
+                    }
                 }
             }
         }

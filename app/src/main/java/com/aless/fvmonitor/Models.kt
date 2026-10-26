@@ -24,6 +24,7 @@ data class TelemetryData(
     val pAc: Float = 0f,
     val pAcMem: Float = 0f,
     val eKWh: Float = 0f,
+    val simulationMode: Boolean = false,
     val releSpring: String = "OFF",
     val groups: List<GroupData> = listOf(GroupData(1), GroupData(2), GroupData(3))
 ) {

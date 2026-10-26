@@ -171,13 +171,14 @@ class MainViewModel(context: Context) : ViewModel() {
                 state = map["stato"] ?: "SCONOSCIUTO",
                 lastEvent = map["last_evt"] ?: "OK",
                 v24Raw = v24Val,
-                // Invertiamo il segno della corrente per allineare le etichette UI (Carica/Scarica) al sensore invertito
+                // Il firmware usa positivo=carica; la UI mostra positivo=scarica.
                 iBattTotal = -(map["IbatTot"]?.toFloatOrNull() ?: 0f),
                 iPv = map["IPv"]?.toFloatOrNull() ?: 0f,
                 pPv = map["PFV"]?.toFloatOrNull() ?: 0f,
                 pAc = map["PAC_stim"]?.toFloatOrNull() ?: 0f,
                 pAcMem = map["PAC_mem"]?.toFloatOrNull() ?: 0f,
                 eKWh = map["EkWh"]?.toFloatOrNull() ?: 0f,
+                simulationMode = map["sim"] == "1",
                 releSpring = map["rele_spring"] ?: map["spring"] ?: "OFF",
                 groups = listOf(g1, g2, g3)
             )
