@@ -129,6 +129,7 @@ fun DashboardScreen(viewModel: MainViewModel) {
                 iBattTotal = telemetry.iBattTotal,
                 eKWh = telemetry.eKWh,
                 socPercent = telemetry.socPercent,
+                socWarning = telemetry.socWarning,
                 ocvVoltage = telemetry.estimatedOcv
             )
 
@@ -654,7 +655,7 @@ fun StateHeaderCard(t: TelemetryData) {
 }
 
 @Composable
-fun BatteryTotalCard(iBattTotal: Float, eKWh: Float, socPercent: Int, ocvVoltage: Float) {
+fun BatteryTotalCard(iBattTotal: Float, eKWh: Float, socPercent: Int, socWarning: Boolean, ocvVoltage: Float) {
     val absCurrent = abs(iBattTotal)
     val (statusLabel, statusColor) = remember(iBattTotal) {
         when {
@@ -677,10 +678,18 @@ fun BatteryTotalCard(iBattTotal: Float, eKWh: Float, socPercent: Int, ocvVoltage
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     color = when {
-                        socPercent > 20 -> Color(0xFF4CAF50)
-                        socPercent > 10 -> Color(0xFFFFC107)
-                        else -> Color(0xFFF44336)
+                        socPercent <= 20 -> Color(0xFFF44336)
+                        socWarning -> Color(0xFFFF9800)
+                        else -> Color(0xFF4CAF50)
                     }
+                )
+            }
+            if (socWarning) {
+                Text(
+                    "RISERVA: interrompi la ricarica dell'auto",
+                    color = Color(0xFFB71C1C),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))

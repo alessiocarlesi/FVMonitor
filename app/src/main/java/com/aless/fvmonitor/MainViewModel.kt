@@ -178,6 +178,9 @@ class MainViewModel(context: Context) : ViewModel() {
                 pAc = map["PAC_stim"]?.toFloatOrNull() ?: 0f,
                 pAcMem = map["PAC_mem"]?.toFloatOrNull() ?: 0f,
                 eKWh = map["EkWh"]?.toFloatOrNull() ?: 0f,
+                socPercent = map["SOC"]?.toIntOrNull()?.coerceIn(0, 100)
+                    ?: _telemetry.value.socPercent,
+                socWarning = map["SOCwarn"] == "1",
                 simulationMode = map["sim"] == "1",
                 releSpring = map["rele_spring"] ?: map["spring"] ?: "OFF",
                 groups = listOf(g1, g2, g3)
