@@ -3,6 +3,8 @@ package com.aless.fvmonitor
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +39,16 @@ class MainViewModel(context: Context) : ViewModel() {
 
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    private val _otaStatus = MutableStateFlow("")
+    val otaStatus: StateFlow<String> = _otaStatus.asStateFlow()
+
+    private val _otaProgress = MutableStateFlow(-1)
+    val otaProgress: StateFlow<Int> = _otaProgress.asStateFlow()
+
+    private val _isUploading = MutableStateFlow(false)
+    val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
+
 
     private var tcpService: TcpService? = null
 
@@ -88,6 +100,33 @@ class MainViewModel(context: Context) : ViewModel() {
             addLog("TX CMD: $cmd")
         } else {
             addLog("Impossibile inviare '$cmd': Non connesso")
+        }
+    }
+
+    fun uploadFirmware(hexText: String) {
+        val service = tcpService
+        if (service == null || !_isConnected.value) {
+            _otaStatus.value = "Collega prima l'app al DT06."
+            return
+        }
+        if (_isUploading.value) return
+        _isUploading.value = true
+        _otaProgress.value = 0
+        _otaStatus.value = "Preparazione aggiornamento…"
+        viewModelScope.launch {
+            try {
+                service.uploadFirmware(hexText) { percent, message ->
+                    _otaProgress.value = percent
+                    _otaStatus.value = message
+                }
+                addLog("Aggiornamento firmware completato")
+            } catch (e: Exception) {
+                _otaProgress.value = -1
+                _otaStatus.value = e.message ?: "Aggiornamento non riuscito."
+                addLog("OTA: ${e.message}")
+            } finally {
+                _isUploading.value = false
+            }
         }
     }
 
@@ -181,6 +220,8 @@ class MainViewModel(context: Context) : ViewModel() {
                 socPercent = map["SOC"]?.toIntOrNull()?.coerceIn(0, 100)
                     ?: _telemetry.value.socPercent,
                 socWarning = map["SOCwarn"] == "1",
+                lastCycleAh = if (map["AhCicloValido"] == "1") map["AhCiclo"]?.toFloatOrNull() else null,
+                capacityCycleInProgress = map["AhCicloInCorso"] == "1",
                 simulationMode = map["sim"] == "1",
                 releSpring = map["rele_spring"] ?: map["spring"] ?: "OFF",
                 groups = listOf(g1, g2, g3)

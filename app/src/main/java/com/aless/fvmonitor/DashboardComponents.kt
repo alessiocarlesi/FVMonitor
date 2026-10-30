@@ -1,5 +1,7 @@
 package com.aless.fvmonitor
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,9 +22,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +43,26 @@ fun DashboardScreen(viewModel: MainViewModel) {
     val calG1 by viewModel.calG1.collectAsState()
     val calG2 by viewModel.calG2.collectAsState()
     val calG3 by viewModel.calG3.collectAsState()
+    val otaStatus by viewModel.otaStatus.collectAsState()
+    val otaProgress by viewModel.otaProgress.collectAsState()
+    val isUploading by viewModel.isUploading.collectAsState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingFirmware by remember { mutableStateOf<String?>(null) }
+    var fileError by remember { mutableStateOf<String?>(null) }
+    val firmwarePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                pendingFirmware = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.US_ASCII)?.use { it.readText() }
+                        ?: error("Non riesco a leggere il file selezionato.")
+                }
+                fileError = null
+            } catch (e: Exception) {
+                fileError = e.message ?: "Impossibile aprire il file."
+            }
+        }
+    }
 
     var showSettingsDialog by remember { mutableStateOf(false) }
 
@@ -53,6 +79,22 @@ fun DashboardScreen(viewModel: MainViewModel) {
                 viewModel.updateSettings(newHost, newPort, cV24, cG1, cG2, cG3)
                 showSettingsDialog = false
             }
+        )
+    }
+
+    if (pendingFirmware != null) {
+        AlertDialog(
+            onDismissRequest = { if (!isUploading) pendingFirmware = null },
+            title = { Text("Aggiornare il firmware?") },
+            text = { Text("L'app invierà il file HEX alla scheda tramite il DT06. Durante la scrittura non interrompere l'alimentazione né la connessione. Seleziona il file .ino.mega.hex dello sketch, senza bootloader incluso.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val hex = pendingFirmware
+                    pendingFirmware = null
+                    if (hex != null) viewModel.uploadFirmware(hex)
+                }) { Text("Avvia aggiornamento") }
+            },
+            dismissButton = { TextButton(onClick = { pendingFirmware = null }) { Text("Annulla") } }
         )
     }
 
@@ -130,19 +172,9 @@ fun DashboardScreen(viewModel: MainViewModel) {
                 eKWh = telemetry.eKWh,
                 socPercent = telemetry.socPercent,
                 socWarning = telemetry.socWarning,
-                ocvVoltage = telemetry.estimatedOcv
-            )
-
-            SimulationControlCard(
-                simulationMode = telemetry.simulationMode,
-                isConnected = isConnected,
-                onStart = { v24, iBatt, iPv ->
-                    viewModel.sendCommand("SIM:ON;V24=$v24;IBAT=$iBatt;IPV=$iPv")
-                },
-                onApply = { v24, iBatt, iPv ->
-                    viewModel.sendCommand("SIM:SET;V24=$v24;IBAT=$iBatt;IPV=$iPv")
-                },
-                onStop = { viewModel.sendCommand("SIM:OFF") }
+                ocvVoltage = telemetry.estimatedOcv,
+                lastCycleAh = telemetry.lastCycleAh,
+                capacityCycleInProgress = telemetry.capacityCycleInProgress
             )
 
             Text("Controllo Carico e Comandi", fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -174,6 +206,35 @@ fun DashboardScreen(viewModel: MainViewModel) {
                             fontFamily = FontFamily.Monospace,
                             fontSize = 10.sp
                         )
+                    }
+                }
+            }
+
+            SimulationControlCard(
+                simulationMode = telemetry.simulationMode,
+                isConnected = isConnected,
+                onStart = { v24, iBatt, iPv ->
+                    viewModel.sendCommand("SIM:ON;V24=$v24;IBAT=$iBatt;IPV=$iPv")
+                },
+                onApply = { v24, iBatt, iPv ->
+                    viewModel.sendCommand("SIM:SET;V24=$v24;IBAT=$iBatt;IPV=$iPv")
+                },
+                onStop = { viewModel.sendCommand("SIM:OFF") }
+            )
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Aggiornamento firmware remoto", fontWeight = FontWeight.Bold)
+                    Text("Invio tramite DT06 e bootloader su Serial3. Scegli il file HEX dello sketch.", fontSize = 12.sp, color = Color.Gray)
+                    OutlinedButton(onClick = { firmwarePicker.launch(arrayOf("*/*")) }, enabled = !isUploading) {
+                        Text("Scegli file HEX…")
+                    }
+                    if (fileError != null) Text(fileError!!, color = Color(0xFFF44336), fontSize = 12.sp)
+                    if (otaStatus.isNotBlank()) {
+                        if (otaProgress in 0..100 && isUploading) LinearProgressIndicator(
+                            progress = otaProgress / 100f, modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(otaStatus, fontSize = 12.sp, color = if (otaProgress < 0) Color(0xFFF44336) else MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -655,7 +716,7 @@ fun StateHeaderCard(t: TelemetryData) {
 }
 
 @Composable
-fun BatteryTotalCard(iBattTotal: Float, eKWh: Float, socPercent: Int, socWarning: Boolean, ocvVoltage: Float) {
+fun BatteryTotalCard(iBattTotal: Float, eKWh: Float, socPercent: Int, socWarning: Boolean, ocvVoltage: Float, lastCycleAh: Float?, capacityCycleInProgress: Boolean) {
     val absCurrent = abs(iBattTotal)
     val (statusLabel, statusColor) = remember(iBattTotal) {
         when {
@@ -691,6 +752,15 @@ fun BatteryTotalCard(iBattTotal: Float, eKWh: Float, socPercent: Int, socWarning
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp
                 )
+            }
+            Text(
+                text = lastCycleAh?.let { "Capacità stimata ultimo ciclo: %.1f Ah".format(it) }
+                    ?: "Capacità stimata: in attesa del primo ciclo completo",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            if (capacityCycleInProgress) {
+                Text("Misura del ciclo in corso…", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(modifier = Modifier.height(4.dp))
             LinearProgressIndicator(

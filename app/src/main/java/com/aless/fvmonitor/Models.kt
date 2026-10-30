@@ -26,6 +26,8 @@ data class TelemetryData(
     val eKWh: Float = 0f,
     val socPercent: Int = 50,
     val socWarning: Boolean = false,
+    val lastCycleAh: Float? = null,
+    val capacityCycleInProgress: Boolean = false,
     val simulationMode: Boolean = false,
     val releSpring: String = "OFF",
     val groups: List<GroupData> = listOf(GroupData(1), GroupData(2), GroupData(3))
